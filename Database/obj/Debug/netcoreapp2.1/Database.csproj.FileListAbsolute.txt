@@ -1,0 +1,9 @@
+C:\Users\Nastena\Desktop\SocialNetwork-master\Database\bin\Debug\netcoreapp2.1\Database.deps.json
+C:\Users\Nastena\Desktop\SocialNetwork-master\Database\bin\Debug\netcoreapp2.1\Database.dll
+C:\Users\Nastena\Desktop\SocialNetwork-master\Database\bin\Debug\netcoreapp2.1\Database.pdb
+C:\Users\Nastena\Desktop\SocialNetwork-master\Database\obj\Debug\netcoreapp2.1\Database.csprojAssemblyReference.cache
+C:\Users\Nastena\Desktop\SocialNetwork-master\Database\obj\Debug\netcoreapp2.1\Database.csproj.CoreCompileInputs.cache
+C:\Users\Nastena\Desktop\SocialNetwork-master\Database\obj\Debug\netcoreapp2.1\Database.AssemblyInfoInputs.cache
+C:\Users\Nastena\Desktop\SocialNetwork-master\Database\obj\Debug\netcoreapp2.1\Database.AssemblyInfo.cs
+C:\Users\Nastena\Desktop\SocialNetwork-master\Database\obj\Debug\netcoreapp2.1\Database.dll
+C:\Users\Nastena\Desktop\SocialNetwork-master\Database\obj\Debug\netcoreapp2.1\Database.pdb
