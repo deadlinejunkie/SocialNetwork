@@ -18,11 +18,45 @@ jobs:
           latest_tag=$(git describe --tags --abbrev=0 2>/dev/null || echo "0.0.0")
           echo "latest=$latest_tag" >> $GITHUB_OUTPUT
 
-      - name: Get merged pull requests
-        id: merged_prs
-        uses: actions-ecosystem/action-get-merged-pull-request@v1
+      - name: Get merged PRs since last tag
+        id: prs
+        uses: actions/github-script@v7
         with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const { data: pulls } = await github.rest.pulls.list({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: "closed",
+              sort: "updated",
+              direction: "desc",
+              per_page: 100,
+            });
+
+            // filter PRs merged after last tag commit
+            const { execSync } = require("child_process");
+            let lastTag = "${{ steps.get_tag.outputs.latest }}";
+            let lastSha = "";
+            try {
+              lastSha = execSync(`git rev-list -n 1 ${lastTag}`).toString().trim();
+            } catch(e) {
+              lastSha = "";
+            }
+
+            const { data: commits } = await github.rest.repos.listCommits({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              sha: "master",
+            });
+            const lastIndex = lastSha
+              ? commits.findIndex(c => c.sha.startsWith(lastSha))
+              : commits.length;
+
+            const merged = pulls.filter(pr =>
+              pr.merged_at &&
+              commits.findIndex(c => c.sha.startsWith(pr.merge_commit_sha)) < lastIndex
+            );
+
+            core.setOutput("prs", JSON.stringify(merged));
 
       - name: Determine next version
         id: bump
@@ -33,24 +67,20 @@ jobs:
           patch=$(echo $version | cut -d. -f3)
 
           bump="patch"
-          for row in $(echo '${{ steps.merged_prs.outputs.prs }}' | jq -r '.[] | @base64'); do
-            _jq() { echo ${row} | base64 --decode | jq -r ${1}; }
-            title=$(_jq '.title')
+          prs=$(echo '${{ steps.prs.outputs.prs }}' | jq -r '.[].title')
+          while IFS= read -r title; do
             if [[ "$title" == *"(major)"* ]]; then
               bump="major"
               break
             elif [[ "$title" == *"(minor)"* ]]; then
               bump="minor"
             fi
-          done
+          done <<< "$prs"
 
           if [[ "$bump" == "major" ]]; then
-            major=$((major+1))
-            minor=0
-            patch=0
+            major=$((major+1)); minor=0; patch=0
           elif [[ "$bump" == "minor" ]]; then
-            minor=$((minor+1))
-            patch=0
+            minor=$((minor+1)); patch=0
           else
             patch=$((patch+1))
           fi
@@ -58,53 +88,21 @@ jobs:
           new_version="$major.$minor.$patch"
           echo "new_version=$new_version" >> $GITHUB_OUTPUT
 
-      - name: Generate release notes
+      - name: Format release notes
         id: notes
         run: |
-          changelog=""
-          new_contributors=""
-
-          for row in $(echo '${{ steps.merged_prs.outputs.prs }}' | jq -r '.[] | @base64'); do
-            _jq() { echo ${row} | base64 --decode | jq -r ${1}; }
-
-            number=$(_jq '.number')
-            title=$(_jq '.title')
-            user=$(_jq '.user.login')
-            first=$(_jq '.author_association')
-
-            changelog="$changelog\n- $title by @$user in #$number"
-
-            if [[ "$first" == "FIRST_TIME_CONTRIBUTOR" ]]; then
-              new_contributors="$new_contributors\n- @$user made their first contribution in #$number"
-            fi
-          done
-
-          if [ -z "$changelog" ]; then
-            changelog="No changes"
-          fi
-
-          echo "changelog=$changelog" >> $GITHUB_OUTPUT
-          echo "new_contributors=$new_contributors" >> $GITHUB_OUTPUT
-
-      - name: Push new tag
-        run: |
-          git config user.name github-actions
-          git config user.email github-actions@github.com
-          git tag ${{ steps.bump.outputs.new_version }}
-          git push origin ${{ steps.bump.outputs.new_version }}
+          prs='${{ steps.prs.outputs.prs }}'
+          echo "body<<EOF" >> $GITHUB_OUTPUT
+          echo "### Changes since ${{ steps.get_tag.outputs.latest }}" >> $GITHUB_OUTPUT
+          echo "" >> $GITHUB_OUTPUT
+          echo "$prs" | jq -r '.[] | "- PR #\(.number): \(.title) (@\(.user.login))"' >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
 
       - name: Create GitHub release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.bump.outputs.new_version }}
           name: Release ${{ steps.bump.outputs.new_version }}
-          body: |
-            ## What’s Changed
-            ${{ steps.notes.outputs.changelog }}
-
-            ## New Contributors
-            ${{ steps.notes.outputs.new_contributors }}
-
-            **Full Changelog**: https://github.com/${{ github.repository }}/commits/${{ steps.bump.outputs.new_version }}
+          body: ${{ steps.notes.outputs.body }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
