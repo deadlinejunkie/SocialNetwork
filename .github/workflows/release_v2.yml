@@ -1,0 +1,101 @@
+name: Manual Release v2
+
+on:
+  workflow_dispatch:
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Get latest tag
+        id: get_tag
+        run: |
+          latest_tag=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0")
+          echo "latest=$latest_tag" >> $GITHUB_OUTPUT
+
+      - name: Check for new commits
+        id: check_for_changes
+        run: |
+          commit_count=$(git rev-list ${{ steps.get_tag.outputs.latest }}..HEAD --count)
+          echo "count=$commit_count" >> $GITHUB_OUTPUT
+          if [ "$commit_count" -eq 0 ]; then
+            echo "No new commits since last tag. No release will be created."
+          else
+            echo "$commit_count new commits found. Proceeding with release."
+          fi
+
+      - name: Get PRs and determine bump level
+        if: steps.check_for_changes.outputs.count > 0
+        id: get_prs
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          LATEST_TAG: ${{ steps.get_tag.outputs.latest }}
+        run: |
+          LAST_TAG_DATE=$(git log -1 --format=%aI $LATEST_TAG)
+          PRS=$(gh pr list --state merged --search "merged:>$LAST_TAG_DATE" --json number,title,author)
+          BUMP_LEVEL="patch"
+          CHANGELOG=""
+          
+          echo "$PRS" | jq -c '.[]' | while IFS= read -r pr; do
+            title=$(echo "$pr" | jq -r '.title')
+            number=$(echo "$pr" | jq -r '.number')
+            author=$(echo "$pr" | jq -r '.author.login')
+            
+            if [[ "$title" == *"(major)"* ]]; then
+              BUMP_LEVEL="major"
+            elif [[ "$title" == *"(minor)"* && "$BUMP_LEVEL" != "major" ]]; then
+              BUMP_LEVEL="minor"
+            fi
+            
+            CHANGELOG="${CHANGELOG}- ${title} by @${author} in #${number}\n"
+          done
+          
+          echo "bump_level=$BUMP_LEVEL" >> $GITHUB_OUTPUT
+          {
+            echo "changelog<<EOF"
+            echo -e "$CHANGELOG"
+            echo "EOF"
+          } >> $GITHUB_OUTPUT
+
+      - name: Calculate next version
+        if: steps.check_for_changes.outputs.count > 0
+        id: calculate_version
+        run: |
+          current_version="${{ steps.get_tag.outputs.latest }}"
+          version=${current_version#v}
+          major=$(echo $version | cut -d. -f1)
+          minor=$(echo $version | cut -d. -f2)
+          patch=$(echo $version | cut -d. -f3)
+          bump="${{ steps.get_prs.outputs.bump_level }}"
+
+          if [[ "$bump" == "major" ]]; then
+            major=$((major+1)); minor=0; patch=0
+          elif [[ "$bump" == "minor" ]]; then
+            minor=$((minor+1)); patch=0
+          else
+            patch=$((patch+1))
+          fi
+          
+          new_version="v$major.$minor.$patch"
+          echo "new_version=$new_version" >> $GITHUB_OUTPUT
+
+      - name: Create GitHub Release
+        if: steps.check_for_changes.outputs.count > 0
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.calculate_version.outputs.new_version }}
+          name: Release ${{ steps.calculate_version.outputs.new_version }}
+          body: |
+            ## What's Changed
+            
+            ${{ steps.get_prs.outputs.changelog }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
