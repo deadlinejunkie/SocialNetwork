@@ -1,7 +1,7 @@
 name: Manual Release
 
 on:
-  workflow_dispatch:  # 👈 adds "Run workflow" button in GitHub Actions
+  workflow_dispatch:
 
 jobs:
   release:
@@ -33,14 +33,16 @@ jobs:
           patch=$(echo $version | cut -d. -f3)
 
           bump="patch"
-          while IFS= read -r title; do
+          for row in $(echo '${{ steps.merged_prs.outputs.prs }}' | jq -r '.[] | @base64'); do
+            _jq() { echo ${row} | base64 --decode | jq -r ${1}; }
+            title=$(_jq '.title')
             if [[ "$title" == *"(major)"* ]]; then
               bump="major"
               break
             elif [[ "$title" == *"(minor)"* ]]; then
               bump="minor"
             fi
-          done <<< "${{ steps.merged_prs.outputs.titles }}"
+          done
 
           if [[ "$bump" == "major" ]]; then
             major=$((major+1))
@@ -53,7 +55,8 @@ jobs:
             patch=$((patch+1))
           fi
 
-          echo "new_version=$major.$minor.$patch" >> $GITHUB_OUTPUT
+          new_version="$major.$minor.$patch"
+          echo "new_version=$new_version" >> $GITHUB_OUTPUT
 
       - name: Generate release notes
         id: notes
@@ -76,8 +79,19 @@ jobs:
             fi
           done
 
+          if [ -z "$changelog" ]; then
+            changelog="No changes"
+          fi
+
           echo "changelog=$changelog" >> $GITHUB_OUTPUT
           echo "new_contributors=$new_contributors" >> $GITHUB_OUTPUT
+
+      - name: Push new tag
+        run: |
+          git config user.name github-actions
+          git config user.email github-actions@github.com
+          git tag ${{ steps.bump.outputs.new_version }}
+          git push origin ${{ steps.bump.outputs.new_version }}
 
       - name: Create GitHub release
         uses: softprops/action-gh-release@v2
