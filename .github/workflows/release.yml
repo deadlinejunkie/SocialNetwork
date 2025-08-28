@@ -1,0 +1,70 @@
+name: Manual Release
+
+on:
+  workflow_dispatch:  # 👈 adds "Run workflow" button in GitHub Actions
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Get latest tag
+        id: get_tag
+        run: |
+          latest_tag=$(git describe --tags --abbrev=0 2>/dev/null || echo "0.0.0")
+          echo "latest=$latest_tag" >> $GITHUB_OUTPUT
+
+      - name: Get merged PR titles since last tag
+        id: pr_titles
+        run: |
+          titles=$(git log ${{ steps.get_tag.outputs.latest }}..HEAD --merges --pretty=format:"%s")
+          echo "titles<<EOF" >> $GITHUB_OUTPUT
+          echo "$titles" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Determine next version
+        id: bump
+        run: |
+          version="${{ steps.get_tag.outputs.latest }}"
+          major=$(echo $version | cut -d. -f1)
+          minor=$(echo $version | cut -d. -f2)
+          patch=$(echo $version | cut -d. -f3)
+
+          bump="patch"
+          while IFS= read -r title; do
+            if [[ "$title" == *"(major)"* ]]; then
+              bump="major"
+              break
+            elif [[ "$title" == *"(minor)"* ]]; then
+              bump="minor"
+            fi
+          done <<< "${{ steps.pr_titles.outputs.titles }}"
+
+          if [[ "$bump" == "major" ]]; then
+            major=$((major+1))
+            minor=0
+            patch=0
+          elif [[ "$bump" == "minor" ]]; then
+            minor=$((minor+1))
+            patch=0
+          else
+            patch=$((patch+1))
+          fi
+
+          new_version="$major.$minor.$patch"
+          echo "new_version=$new_version" >> $GITHUB_OUTPUT
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.bump.outputs.new_version }}
+          name: Release ${{ steps.bump.outputs.new_version }}
+          body: |
+            Changes since ${{ steps.get_tag.outputs.latest }}:
+            ${{ steps.pr_titles.outputs.titles }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
