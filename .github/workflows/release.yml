@@ -18,13 +18,11 @@ jobs:
           latest_tag=$(git describe --tags --abbrev=0 2>/dev/null || echo "0.0.0")
           echo "latest=$latest_tag" >> $GITHUB_OUTPUT
 
-      - name: Get merged PR titles since last tag
-        id: pr_titles
-        run: |
-          titles=$(git log ${{ steps.get_tag.outputs.latest }}..HEAD --merges --pretty=format:"%s")
-          echo "titles<<EOF" >> $GITHUB_OUTPUT
-          echo "$titles" >> $GITHUB_OUTPUT
-          echo "EOF" >> $GITHUB_OUTPUT
+      - name: Get merged pull requests
+        id: merged_prs
+        uses: actions-ecosystem/action-get-merged-pull-request@v1
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Determine next version
         id: bump
@@ -42,7 +40,7 @@ jobs:
             elif [[ "$title" == *"(minor)"* ]]; then
               bump="minor"
             fi
-          done <<< "${{ steps.pr_titles.outputs.titles }}"
+          done <<< "${{ steps.merged_prs.outputs.titles }}"
 
           if [[ "$bump" == "major" ]]; then
             major=$((major+1))
@@ -55,8 +53,31 @@ jobs:
             patch=$((patch+1))
           fi
 
-          new_version="$major.$minor.$patch"
-          echo "new_version=$new_version" >> $GITHUB_OUTPUT
+          echo "new_version=$major.$minor.$patch" >> $GITHUB_OUTPUT
+
+      - name: Generate release notes
+        id: notes
+        run: |
+          changelog=""
+          new_contributors=""
+
+          for row in $(echo '${{ steps.merged_prs.outputs.prs }}' | jq -r '.[] | @base64'); do
+            _jq() { echo ${row} | base64 --decode | jq -r ${1}; }
+
+            number=$(_jq '.number')
+            title=$(_jq '.title')
+            user=$(_jq '.user.login')
+            first=$(_jq '.author_association')
+
+            changelog="$changelog\n- $title by @$user in #$number"
+
+            if [[ "$first" == "FIRST_TIME_CONTRIBUTOR" ]]; then
+              new_contributors="$new_contributors\n- @$user made their first contribution in #$number"
+            fi
+          done
+
+          echo "changelog=$changelog" >> $GITHUB_OUTPUT
+          echo "new_contributors=$new_contributors" >> $GITHUB_OUTPUT
 
       - name: Create GitHub release
         uses: softprops/action-gh-release@v2
@@ -64,7 +85,12 @@ jobs:
           tag_name: ${{ steps.bump.outputs.new_version }}
           name: Release ${{ steps.bump.outputs.new_version }}
           body: |
-            Changes since ${{ steps.get_tag.outputs.latest }}:
-            ${{ steps.pr_titles.outputs.titles }}
+            ## What’s Changed
+            ${{ steps.notes.outputs.changelog }}
+
+            ## New Contributors
+            ${{ steps.notes.outputs.new_contributors }}
+
+            **Full Changelog**: https://github.com/${{ github.repository }}/commits/${{ steps.bump.outputs.new_version }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
