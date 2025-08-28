@@ -1,0 +1,108 @@
+name: Manual Release v3
+
+on:
+  workflow_dispatch:  # 👈 adds "Run workflow" button in GitHub Actions
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Get latest tag
+        id: get_tag
+        run: |
+          latest_tag=$(git describe --tags --abbrev=0 2>/dev/null || echo "0.0.0")
+          echo "latest=$latest_tag" >> $GITHUB_OUTPUT
+
+      - name: Get merged pull requests
+        id: merged_prs
+        uses: actions-ecosystem/action-get-merged-pull-request@v1
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Check for merged PRs
+        run: |
+          if [ -z "${{ steps.merged_prs.outputs.titles }}" ]; then
+            echo "❌ No merged pull requests since last tag. Aborting release."
+            exit 1
+          fi
+
+      - name: Determine next version
+        id: bump
+        run: |
+          version="${{ steps.get_tag.outputs.latest }}"
+          major=$(echo $version | cut -d. -f1)
+          minor=$(echo $version | cut -d. -f2)
+          patch=$(echo $version | cut -d. -f3)
+
+          bump="patch"
+          while IFS= read -r title; do
+            if [[ "$title" == *"(major)"* ]]; then
+              bump="major"
+              break
+            elif [[ "$title" == *"(minor)"* ]]; then
+              bump="minor"
+            fi
+          done <<< "${{ steps.merged_prs.outputs.titles }}"
+
+          if [[ "$bump" == "major" ]]; then
+            major=$((major+1))
+            minor=0
+            patch=0
+          elif [[ "$bump" == "minor" ]]; then
+            minor=$((minor+1))
+            patch=0
+          else
+            patch=$((patch+1))
+          fi
+
+          echo "new_version=$major.$minor.$patch" >> $GITHUB_OUTPUT
+
+      - name: Generate release notes
+        id: notes
+        run: |
+          changelog=""
+          contributors=""
+          new_contributors=""
+
+          for row in $(echo '${{ steps.merged_prs.outputs.prs }}' | jq -r '.[] | @base64'); do
+            _jq() { echo ${row} | base64 --decode | jq -r ${1}; }
+
+            number=$(_jq '.number')
+            title=$(_jq '.title')
+            user=$(_jq '.user.login')
+            first=$(_jq '.author_association')
+
+            changelog="$changelog\n- $title by @$user in #$number"
+
+            if [[ "$contributors" != *"@$user"* ]]; then
+              contributors="$contributors @$user"
+            fi
+
+            if [[ "$first" == "FIRST_TIME_CONTRIBUTOR" ]]; then
+              new_contributors="$new_contributors\n- @$user made their first contribution in #$number"
+            fi
+          done
+
+          echo "changelog=$changelog" >> $GITHUB_OUTPUT
+          echo "new_contributors=$new_contributors" >> $GITHUB_OUTPUT
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.bump.outputs.new_version }}
+          name: Release ${{ steps.bump.outputs.new_version }}
+          body: |
+            ## What’s Changed
+            ${{ steps.notes.outputs.changelog }}
+
+            ## New Contributors
+            ${{ steps.notes.outputs.new_contributors }}
+
+            **Full Changelog**: https://github.com/${{ github.repository }}/commits/${{ steps.bump.outputs.new_version }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
